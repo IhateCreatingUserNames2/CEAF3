@@ -33,7 +33,7 @@ class AgentState(TypedDict):
     coherence_metrics: Optional[Dict[str, float]]
     active_failures: List[str]
     narrative_context: Optional[str]
-    virtue_considerations: List[str]  # <-- ADDED
+    virtue_considerations: List[str]
     loss_insights: List[Dict[str, Any]]
     response_draft: Optional[str]
     metadata: Dict[str, Any]
@@ -43,7 +43,7 @@ class AgentState(TypedDict):
 class AgentConfig:
     """Configuration for individual agents"""
     name: str
-    model: str = "openai/gpt-4o-mini"  # Switched to a more common model
+    model: str = "openai/gpt-4o-mini"
     temperature: float = 0.7
     max_tokens: int = 1000
     system_prompt: str = ""
@@ -51,20 +51,21 @@ class AgentConfig:
 
 class CEAFOrchestrator:
     def __init__(self, openrouter_api_key: str, memory_architecture: Any, mcl: MetacognitiveControlLoop, lcam: Any,
-                 ncim: Any, vre: Any):  # <-- ADDED vre
+                 ncim: Any, vre: Any):
         self.openrouter_api_key = openrouter_api_key
         self.memory = memory_architecture
         self.mcl = mcl
         self.lcam = lcam
         self.ncim = ncim
-        self.vre = vre  # <-- ADDED
+        self.vre = vre
         self.agents = self._initialize_agents()
         self.checkpointer = InMemorySaver()
         self.workflow = self._build_workflow()
-        logger.info("Initialized CEAF Orchestrator with LCAM, NCIM, and VRE integration")  # <-- UPDATED LOG
+        logger.info("Initialized CEAF Orchestrator with LCAM, NCIM, and VRE integration")
 
     def _initialize_agents(self) -> Dict[str, AgentConfig]:
-        # Unchanged, collapsed for brevity
+        # --- MODIFICATION START ---
+        # Added a new specialist agent for classifying feedback.
         return {
             "ora": AgentConfig(name="Orchestrator/Responder Agent",
                                system_prompt="You are the Orchestrator/Responder Agent (ORA)..."),
@@ -77,15 +78,20 @@ class CEAFOrchestrator:
             "loss_cataloger": AgentConfig(name="Loss Pattern Cataloger", temperature=0.4,
                                           system_prompt="You analyze and catalog failure patterns..."),
             "edge_navigator": AgentConfig(name="Edge of Coherence Navigator", temperature=0.9,
-                                          system_prompt="You help navigate the edge...")
+                                          system_prompt="You help navigate the edge..."),
+            # --- NEW AGENT ---
+            "feedback_classifier": AgentConfig(name="Feedback Classifier", temperature=0.0, max_tokens=10,
+                                               system_prompt="You are a text classification agent. Analyze the user's feedback. Respond with ONLY ONE of the following words: 'positive', 'neutral', or 'negative_critique'. Do not add any other text or punctuation.")
         }
+        # --- MODIFICATION END ---
 
+    # ... (no changes to _build_workflow, _call_agent, _retrieve_memory_context, _assess_coherence, _get_loss_insights, _get_virtue_input) ...
     def _build_workflow(self) -> StateGraph:
         workflow = StateGraph(AgentState)
         workflow.add_node("retrieve_memory", self._retrieve_memory_context)
         workflow.add_node("assess_coherence", self._assess_coherence)
         workflow.add_node("get_loss_insights", self._get_loss_insights)
-        workflow.add_node("get_virtue_input", self._get_virtue_input)  # <-- ADDED NODE
+        workflow.add_node("get_virtue_input", self._get_virtue_input)
         workflow.add_node("generate_response", self._generate_response)
         workflow.add_node("learn_from_interaction", self._learn_from_interaction)
         workflow.add_node("update_identity", self._update_identity)
@@ -93,8 +99,8 @@ class CEAFOrchestrator:
         workflow.set_entry_point("retrieve_memory")
         workflow.add_edge("retrieve_memory", "assess_coherence")
         workflow.add_edge("assess_coherence", "get_loss_insights")
-        workflow.add_edge("get_loss_insights", "get_virtue_input")  # <-- UPDATED EDGE
-        workflow.add_edge("get_virtue_input", "generate_response")  # <-- ADDED EDGE
+        workflow.add_edge("get_loss_insights", "get_virtue_input")
+        workflow.add_edge("get_virtue_input", "generate_response")
         workflow.add_edge("generate_response", "learn_from_interaction")
         workflow.add_edge("learn_from_interaction", "update_identity")
         workflow.add_edge("update_identity", END)
@@ -105,21 +111,19 @@ class CEAFOrchestrator:
         agent_config = self.agents[agent_name]
         messages = [{"role": "system", "content": agent_config.system_prompt}, {"role": "user", "content": prompt}]
         try:
-            # Note: Model name might need 'openrouter/' prefix depending on litellm version
             response = await acompletion(
                 model=agent_config.model, messages=messages,
                 temperature=agent_config.temperature, max_tokens=agent_config.max_tokens,
                 api_key=self.openrouter_api_key,
-                base_url="https://openrouter.ai/api/v1"  # Explicitly set base_url for clarity
+                base_url="https://openrouter.ai/api/v1"
             )
-            return response.choices[0].message.content
+            return response.choices[0].message.content.strip().lower()  # Added strip and lower for classifier
         except Exception as e:
             logger.error(f"Error calling agent {agent_name}: {e}")
             if self.mcl: self.mcl.register_failure(f"agent_call_failure_{agent_name}", {"error": str(e)})
             return f"Error: Could not get a response from the {agent_name} agent."
 
     async def _retrieve_memory_context(self, state: AgentState) -> AgentState:
-        # Unchanged from previous version
         if not self.memory:
             state["memory_context"] = []
             return state
@@ -139,7 +143,6 @@ class CEAFOrchestrator:
         return state
 
     async def _assess_coherence(self, state: AgentState) -> AgentState:
-        # Unchanged from previous version
         if not self.mcl:
             state["coherence_metrics"] = {"overall_coherence": 0.7}
             return state
@@ -157,7 +160,6 @@ class CEAFOrchestrator:
         return state
 
     async def _get_loss_insights(self, state: AgentState) -> AgentState:
-        # Unchanged from previous version
         if not self.lcam:
             state["loss_insights"] = []
             return state
@@ -172,13 +174,11 @@ class CEAFOrchestrator:
             state["loss_insights"] = []
         return state
 
-    async def _get_virtue_input(self, state: AgentState) -> AgentState:  # <-- ADDED METHOD
-        """Consults the VRE for reasoning principles based on the current context."""
+    async def _get_virtue_input(self, state: AgentState) -> AgentState:
         if not self.vre:
             state["virtue_considerations"] = []
             return state
         try:
-            # The VRE's method needs the whole state to analyze context
             considerations = self.vre.get_virtue_considerations(state)
             state["virtue_considerations"] = considerations
         except Exception as e:
@@ -186,15 +186,99 @@ class CEAFOrchestrator:
             state["virtue_considerations"] = ["Error retrieving virtue considerations."]
         return state
 
+    # --- MODIFICATION START ---
+    # This new private method will classify user feedback.
+    async def _classify_user_feedback(self, user_message: str) -> str:
+        """Uses an LLM to classify the user's feedback on the previous turn."""
+        prompt = f"""Analyze the following user feedback and classify it.
+
+        User feedback: "{user_message}"
+
+        Possible classifications:
+        - 'positive': The user is expressing satisfaction, agreement, or praise.
+        - 'neutral': The user is asking a follow-up question, changing the subject, or providing neutral information.
+        - 'negative_critique': The user is expressing dissatisfaction, pointing out a flaw, correcting the AI, or calling the response generic, abstract, or a failure.
+
+        What is the classification of the feedback?
+        """
+        classification = await self._call_agent("feedback_classifier", prompt, {})
+
+        # Ensure the output is one of the valid classifications
+        if classification in ['positive', 'neutral', 'negative_critique']:
+            logger.info(f"User feedback classified as: {classification}")
+            return classification
+        else:
+            logger.warning(
+                f"Feedback classifier returned unexpected value: '{classification}'. Defaulting to 'neutral'.")
+            return 'neutral'
+
+    async def _learn_from_interaction(self, state: AgentState) -> AgentState:
+        if not self.memory or not self.mcl:
+            return state
+
+        # Get the last human message from the state to classify feedback
+        last_human_message = ""
+        if state["messages"] and len(state["messages"]) > 1:
+            # The last message is the AI's response, the one before is the user's query that triggered it.
+            # In our graph, the query that *led* to the current `response_draft` is the `current_query`.
+            # We need to find the user message that *followed* a previous AI response.
+            # A simpler approach for now: the `current_query` is the user's most recent input.
+            last_human_message = state["current_query"]
+
+        feedback_classification = await self._classify_user_feedback(last_human_message)
+
+        coherence = state.get("coherence_metrics", {}).get("overall_coherence", 0.5)
+
+        # Prioritize user feedback over internal metrics for success/failure
+        is_critique = (feedback_classification == 'negative_critique')
+        success = not is_critique and coherence > 0.55  # If it's a critique, it's a failure.
+
+        failure_pattern = None
+        if not success:
+            if is_critique:
+                # We can even use another LLM call to summarize the critique into a pattern
+                # For now, a generic pattern is fine.
+                failure_pattern = "user_critique_of_response"
+                logger.info(f"Interaction tagged as failure due to user critique.")
+            else:
+                failure_pattern = 'coherence_loss'
+
+        experience = MemoryExperience(
+            content=f"Q: {state['current_query']}\nA: {state.get('response_draft', '')[:300]}...",
+            timestamp=datetime.now(),
+            experience_type='success' if success else 'failure',
+            context={"coherence": state.get("coherence_metrics", {}), "feedback_class": feedback_classification},
+            outcome_value=1.0 if success else -0.5,
+            learning_value=abs(coherence - 0.5) + (0.4 if not success else 0.2),
+            failure_pattern=failure_pattern,
+            metadata={"interaction_id": state.get("metadata", {}).get("interaction_id")}
+        )
+        self.memory.add_experience(experience)
+
+        if not success and self.lcam:
+            # This will now be correctly called when the user provides a critique.
+            self.lcam.catalog_failure(experience)
+
+        return state
+
+    # --- MODIFICATION END ---
+
+    # ... (no changes to _update_identity, _generate_response, process_query) ...
     async def _update_identity(self, state: AgentState) -> AgentState:
-        # Unchanged from previous version
         if not self.ncim:
             return state
         try:
             query = state["current_query"]
             response = state["response_draft"]
+
+            # --- MODIFICATION START ---
+            # We need to determine success more robustly here as well for the narrative
+            last_human_message = state["current_query"]
+            feedback_class = await self._classify_user_feedback(last_human_message)
             coherence = state.get("coherence_metrics", {}).get("overall_coherence", 0.5)
-            success = coherence > 0.6
+            success = (feedback_class != 'negative_critique') and coherence > 0.55
+            # --- MODIFICATION END ---
+
             loss_insights = state.get("loss_insights", [])
             outcome = "a success" if success else "a challenge (failure)"
             lesson = "This reinforced my existing knowledge."
@@ -217,7 +301,7 @@ class CEAFOrchestrator:
             logger.error(f"Error during identity update: {e}", exc_info=True)
         return state
 
-    async def _generate_response(self, state: AgentState) -> AgentState:  # <-- MODIFIED
+    async def _generate_response(self, state: AgentState) -> AgentState:
         identity_narrative = self.ncim.get_current_identity() if self.ncim else "I am a helpful AI assistant."
 
         context = {
@@ -227,10 +311,9 @@ class CEAFOrchestrator:
             "coherence_state": self.mcl.current_state.value if self.mcl else "unknown",
             "coherence_metrics": state.get("coherence_metrics", {}),
             "loss_insights": state.get("loss_insights", []),
-            "virtue_considerations": state.get("virtue_considerations", [])  # <-- ADDED
+            "virtue_considerations": state.get("virtue_considerations", [])
         }
 
-        # Enhanced prompt using VRE's output
         prompt = f"""You are a helpful AI assistant (CEAF). Respond to the user's query based on the provided context. 
         Be genuine, thoughtful, and unafraid of productive complexity. 
 
@@ -244,8 +327,9 @@ class CEAFOrchestrator:
         Your Response:"""
 
         try:
+            # We call .strip() here because the classifier adds a space
             response = await self._call_agent("ora", prompt, state)
-            state["response_draft"] = response
+            state["response_draft"] = response.strip()
             state["messages"].append(AIMessage(content=response))
         except Exception as e:
             logger.error(f"Error in _generate_response: {e}")
@@ -254,24 +338,7 @@ class CEAFOrchestrator:
             state["messages"].append(AIMessage(content=fallback))
         return state
 
-    async def _learn_from_interaction(self, state: AgentState) -> AgentState:
-        # Unchanged from previous version
-        if self.memory and self.mcl:
-            coherence = state.get("coherence_metrics", {}).get("overall_coherence", 0.5)
-            success = coherence > 0.6
-            experience = MemoryExperience(
-                content=f"Q: {state['current_query']}\nA: {state.get('response_draft', '')[:300]}...",
-                timestamp=datetime.now(), experience_type='success' if success else 'failure',
-                context={"coherence": state.get("coherence_metrics", {})}, outcome_value=1.0 if success else -0.5,
-                learning_value=abs(coherence - 0.5) + 0.2, failure_pattern='coherence_loss' if not success else None,
-                metadata={"interaction_id": state.get("metadata", {}).get("interaction_id")})
-            self.memory.add_experience(experience)
-
-            if not success and self.lcam:
-                self.lcam.catalog_failure(experience)
-        return state
-
-    async def process_query(self, query: str, thread_id: str = "default") -> str:  # <-- MODIFIED
+    async def process_query(self, query: str, thread_id: str = "default") -> str:
         initial_state: AgentState = {"messages": [HumanMessage(content=query)], "current_query": query,
                                      "memory_context": [], "coherence_metrics": None, "active_failures": [],
                                      "narrative_context": None, "virtue_considerations": [], "loss_insights": [],
